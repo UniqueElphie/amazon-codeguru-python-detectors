@@ -7,17 +7,16 @@ name: Lint (flake8)
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   lint:
-
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ ubuntu-latest, windows-latest, macos-latest ]
+        os: [ubuntu-latest]
 
     steps:
       - run: echo "The job was automatically triggered by a ${{ github.event_name }} event."
@@ -28,7 +27,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v2
         with:
-          python-version: '3.x'
+          python-version: "3.x"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -36,4 +35,7 @@ jobs:
           pip install pep8-naming
       - name: Lint with flake8
         run: flake8 --extend-ignore=F,C,E402 --per-file-ignores='src/python/detectors/pep8_recommendations/pep8_recommendations.py:E714 src/python/detectors/equality_vs_identity/equality_vs_identity.py:E711 src/python/detectors/xpath_injection/xpath_injection.py:N817' --show-source src
-      - run: echo "This job's status is ${{ job.status }}."
+      - name: Compile with py_compile
+        run: |
+          # Run "python -m py_compile" on every .py file under src
+          find ./src -name '*.py' | xargs python -m py_compile
