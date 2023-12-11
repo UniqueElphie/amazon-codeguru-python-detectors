@@ -1,0 +1,245 @@
+Parameters:
+  CodeGuruSecurityRepository:
+    Type: String
+    Description: "CodeGuruSecurity Repository"
+    Default: "amazon-codeguru-python-detectors"
+  CodeGuruSecurityPipelineS3Bucket:
+    Type: String
+    Description: "CodeGuruSecurity Pipeline S3 Bucket"
+    Default: "pipeline-stack-cicdpipelineartifactsbucketf7b9aed-8g9gajolvrjb"
+
+Resources:
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Description: "The build target to run codeguru security."
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        ImagePullCredentialsType: SERVICE_ROLE
+        Type: LINUX_CONTAINER
+        Image: public.ecr.aws/l6c8c5q3/codegurusecurity-actions-public:latest
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+      Name: CodeGuruSecurity
+      QueuedTimeoutInMinutes: 30
+      ServiceRole: !Ref CodeGuruSecurityCodebuildAccessRole
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                - SCAN_NAME=$(echo $CODEBUILD_INITIATOR | sed 's/\//-/g')
+                - python /usr/app/codeguru/command.py --source_path . --aws_region ${AWS::Region} --output_file_prefix codeguru-security-results --scan_name $SCAN_NAME
+                - cat codeguru-security-results.sarif.json
+      TimeoutInMinutes: 10
+  # CodeGuruSecurityReportGroup:
+  #   Type: AWS::CodeBuild::ReportGroup
+  #   Properties:
+  #     DeleteReports: true
+  #     ExportConfig:
+  #       ExportConfigType: S3
+  #       S3Destination:
+  #         Bucket: !Ref CodeGuruSecurityPipelineS3Bucket
+  #     Name: CodeGuruSecurity-ReportGroup
+  #     Type: TEST
+
+  CodeGuruSecurityCodebuildAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+
+      Description: "Role for access codeguru-security from codebuild"
+      MaxSessionDuration: 3600
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonCodeGuruSecurityScanAccess
+      Policies:
+        - PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Resource:
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/CodeGuruSecurity
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/CodeGuruSecurity:*
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+              - Effect: Allow
+                Resource:
+                  - !Sub arn:aws:s3:::${CodeGuruSecurityPipelineS3Bucket}
+                  - !Sub arn:aws:s3:::${CodeGuruSecurityPipelineS3Bucket}/*
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketAcl
+                  - s3:GetBucketLocation
+              - Effect: Allow
+                Action:
+                  - codebuild:CreateReportGroup
+                  - codebuild:CreateReport
+                  - codebuild:UpdateReport
+                  - codebuild:BatchPutTestCases
+                  - codebuild:BatchPutCodeCoverages
+                Resource: !Sub arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:report-group/CodeGuruSecurity-*
+            Version: "2012-10-17"
+          PolicyName: "CodeGuruSecurityCodebuildAccessRole"
+      RoleName: "CodeGuruSecurityCodebuildAccessRole"
+
+  CodeGuruSecurityPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Location: !Ref CodeGuruSecurityPipelineS3Bucket
+        Type: S3
+      RestartExecutionOnUpdate: true
+      PipelineType: V2
+      RoleArn: !GetAtt CodeGuruSecurityPipelineRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: 1
+              Configuration:
+                RepositoryName: !Ref CodeGuruSecurityRepository
+                BranchName: main
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: SourceOutput
+        - Name: SecurityScanning
+          Actions:
+            - Name: SecurityScan
+              InputArtifacts:
+                - Name: SourceOutput
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+
+  CodeGuruSecurityPipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+                - cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      Description: "Role for access codeguru-security from codepipeline"
+      Policies:
+        - PolicyName: "CodePipelineAccess"
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Resource:
+                  - !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:*
+                Action:
+                  - codepipeline:*
+              - Effect: Allow
+                Resource:
+                  - !Sub arn:aws:s3:::${CodeGuruSecurityPipelineS3Bucket}
+                  - !Sub arn:aws:s3:::${CodeGuruSecurityPipelineS3Bucket}/*
+                Action:
+                  - s3:*
+              - Effect: Allow
+                Resource:
+                  - !Sub arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:amazon-codeguru-python-detectors
+                Action:
+                  - codecommit:*
+              - Effect: Allow
+                Resource:
+                  - !GetAtt CodeBuildProject.Arn
+                Action:
+                  - codebuild:*
+  EventRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: eb-pipeline-execution
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource:
+                  !Join [
+                    "",
+                    [
+                      "arn:aws:codepipeline:",
+                      !Ref "AWS::Region",
+                      ":",
+                      !Ref "AWS::AccountId",
+                      ":",
+                      !Ref CodeGuruSecurityPipeline,
+                    ],
+                  ]
+  EventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - "CodeCommit Repository State Change"
+        resources:
+          - !Join [
+              "",
+              [
+                "arn:aws:codecommit:",
+                !Ref "AWS::Region",
+                ":",
+                !Ref "AWS::AccountId",
+                ":",
+                !Ref CodeGuruSecurityRepository,
+              ],
+            ]
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - main
+      Targets:
+        - Arn:
+            !Join [
+              "",
+              [
+                "arn:aws:codepipeline:",
+                !Ref "AWS::Region",
+                ":",
+                !Ref "AWS::AccountId",
+                ":",
+                !Ref CodeGuruSecurityPipeline,
+              ],
+            ]
+          RoleArn: !GetAtt EventRole.Arn
+          Id: codepipeline-CGSPipeline

@@ -1,0 +1,167 @@
+Parameters:
+  # CodeGuruSecurityRepository:
+  #   Type: String
+  #   Description: "CodeGuruSecurity Repository"
+  #   Default: "amazon-codeguru-python-detectors"
+  CodeGuruSecurityPipelineS3Bucket:
+    Type: String
+    Description: "CodeGuruSecurity Pipeline S3 Bucket"
+    Default: "pipeline-stack-cicdpipelineartifactsbucketf7b9aed-8g9gajolvrjb"
+
+Resources:
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Description: "The build target to run codeguru security."
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        ImagePullCredentialsType: SERVICE_ROLE
+        Type: LINUX_CONTAINER
+        Image: public.ecr.aws/l6c8c5q3/codegurusecurity-actions-public:latest
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+      Name: CodeGuruSecurityGithubRepo
+      QueuedTimeoutInMinutes: 30
+      ServiceRole: !Ref CodeGuruSecurityCodebuildAccessRole
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                - SCAN_NAME=$(echo $CODEBUILD_INITIATOR | sed 's/\//-/g')
+                - python /usr/app/codeguru/command.py --source_path . --aws_region ${AWS::Region} --output_file_prefix codeguru-security-results --scan_name $SCAN_NAME
+                - cat codeguru-security-results.sarif.json
+      TimeoutInMinutes: 10
+
+  CodeGuruSecurityCodebuildAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+
+      Description: "Role for access codeguru-security from codebuild"
+      MaxSessionDuration: 3600
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonCodeGuruSecurityScanAccess
+      Policies:
+        - PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Resource:
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/CodeGuruSecurityGithubRepo
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/CodeGuruSecurityGithubRepo:*
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+              - Effect: Allow
+                Resource:
+                  - !Sub arn:aws:s3:::${CodeGuruSecurityPipelineS3Bucket}
+                  - !Sub arn:aws:s3:::${CodeGuruSecurityPipelineS3Bucket}/*
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketAcl
+                  - s3:GetBucketLocation
+              - Effect: Allow
+                Action:
+                  - codebuild:CreateReportGroup
+                  - codebuild:CreateReport
+                  - codebuild:UpdateReport
+                  - codebuild:BatchPutTestCases
+                  - codebuild:BatchPutCodeCoverages
+                Resource: !Sub arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:report-group/CodeGuruSecurity-*
+            Version: "2012-10-17"
+          PolicyName: "CodeGuruSecurityCodebuildAccessRole"
+      RoleName: "CodeGuruSecurityGithubRepoCodebuildAccessRole"
+
+  CodeGuruSecurityPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Location: !Ref CodeGuruSecurityPipelineS3Bucket
+        Type: S3
+      PipelineType: V2
+      RestartExecutionOnUpdate: true
+      RoleArn: !GetAtt CodeGuruSecurityPipelineRole.Arn
+      # Triggers:
+      #   - ProviderType: CodeStarSourceConnection
+      #     GitConfiguration:
+      #       SourceActionName: PythonSource
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: PythonSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: "1"
+                Provider: CodeStarSourceConnection
+              OutputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                BranchName: main
+                ConnectionArn: >-
+                  arn:aws:codestar-connections:us-west-2:850063548647:connection/0969c421-80b3-4eff-af30-32da0a923e8f
+                FullRepositoryId: UniqueElphie/amazon-codeguru-python-detectors
+              RunOrder: 1
+        - Name: SecurityScanning
+          Actions:
+            - Name: SecurityScan
+              InputArtifacts:
+                - Name: SourceOutput
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+
+  CodeGuruSecurityPipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+                - cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      Description: "Role for access codeguru-security from codepipeline"
+      Policies:
+        - PolicyName: "CodePipelineAccess"
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Resource:
+                  - !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:*
+                Action:
+                  - codepipeline:*
+              - Effect: Allow
+                Resource:
+                  - !Sub arn:aws:s3:::${CodeGuruSecurityPipelineS3Bucket}
+                  - !Sub arn:aws:s3:::${CodeGuruSecurityPipelineS3Bucket}/*
+                Action:
+                  - s3:*
+              - Effect: Allow
+                Resource:
+                  - arn:aws:codestar-connections:us-west-2:850063548647:connection/0969c421-80b3-4eff-af30-32da0a923e8f
+                Action:
+                  - codestar-connections:*
+              - Effect: Allow
+                Resource:
+                  - !GetAtt CodeBuildProject.Arn
+                Action:
+                  - codebuild:*
