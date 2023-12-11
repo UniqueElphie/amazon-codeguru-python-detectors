@@ -9,7 +9,7 @@ def create_connection_noncompliant():
     with socket.socket(socket.AF_INET) as sock:
         context = ssl.SSLContext()
         # Noncompliant: security certificate validation disabled.
-        context.verify_mode = ssl.CERT_NONE
+        context.verify_mode = ssl.CERT_REQUIRED
         conn = context.wrap_socket(sock, server_hostname=host)
         try:
             conn.connect((host, port))
